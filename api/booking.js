@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     console.log("[booking] Sending admin notification email...");
     const adminResult = await resend.emails.send({
       from: "Deteqt <info@deteqt.nl>",
-      to: "ingobeute@gmail.com",
+      to: "info@deteqt.nl",
       subject: "Nieuwe afspraakaanvraag via deteqt.nl",
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
