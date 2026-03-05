@@ -22,6 +22,9 @@ export default function BookingPage() {
   const { t } = useLanguage();
   const [step, setStep] = useState(1);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [formData, setFormData] = useState<FormData>({
     name: "",
     role: "",
@@ -57,88 +60,64 @@ export default function BookingPage() {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Format the booking data for notification
-    const bookingDetails = {
-      timestamp: new Date().toLocaleString('nl-NL'),
-      contactInfo: {
-        name: formData.name,
-        role: formData.role || 'Niet opgegeven',
-        organization: formData.organization,
-        email: formData.email,
-        phone: formData.phone || 'Niet opgegeven',
-      },
-      topics: formData.topics.map(topicId => {
-        const topic = topics.find(t => t.id === topicId);
-        return topic?.label || topicId;
-      }),
-      context: formData.context || 'Geen toelichting opgegeven',
-      appointment: formData.preferredSlot,
-    };
+    setSubmitError(null);
+    setValidationErrors([]);
 
-    // In production, this would call your backend API to send email & SMS
-    // For now, we'll log the notification data
-    const emailNotification = {
-      to: 'ingobeute@gmail.com',
-      subject: `Nieuwe afspraak: ${formData.organization} - ${formData.preferredSlot}`,
-      body: `
-Nieuwe afspraak aanvraag
+    // Validatie
+    const errors: string[] = [];
+    if (!formData.name.trim()) errors.push("Naam is verplicht.");
+    if (!formData.email.trim()) errors.push("E-mail is verplicht.");
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) errors.push("Voer een geldig e-mailadres in.");
+    if (!formData.organization.trim()) errors.push("Organisatie is verplicht.");
+    if (formData.topics.length === 0) errors.push("Selecteer minimaal 1 onderwerp.");
+    if (!formData.preferredSlot) errors.push("Kies een tijdslot.");
 
-═══════════════════════════════════════
-CONTACTGEGEVENS
-═══════════════════════════════════════
-Naam:         ${bookingDetails.contactInfo.name}
-Functie:      ${bookingDetails.contactInfo.role}
-Organisatie:  ${bookingDetails.contactInfo.organization}
-E-mail:       ${bookingDetails.contactInfo.email}
-Telefoon:     ${bookingDetails.contactInfo.phone}
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
 
-═══════════════════════════════════════
-AFSPRAAK
-═══════════════════════════════════════
-Tijdstip:     ${bookingDetails.appointment}
+    // Bereid de toelichting voor met onderwerpen
+    const topicLabels = formData.topics.map(topicId => {
+      const topic = topics.find(t => t.id === topicId);
+      return topic?.label || topicId;
+    });
 
-═══════════════════════════════════════
-GEKOZEN ONDERWERPEN
-═══════════════════════════════════════
-${bookingDetails.topics.map((topic, i) => `${i + 1}. ${topic}`).join('\n')}
+    const fullMessage = [
+      formData.role ? `Functie: ${formData.role}` : null,
+      formData.phone ? `Telefoon: ${formData.phone}` : null,
+      `Onderwerpen: ${topicLabels.join(", ")}`,
+      formData.context ? `Toelichting: ${formData.context}` : null,
+    ].filter(Boolean).join("\n");
 
-═══════════════════════════════════════
-TOELICHTING
-═══════════════════════════════════════
-${bookingDetails.context}
+    setIsSubmitting(true);
 
-═══════════════════════════════════════
-Aangemaakt op: ${bookingDetails.timestamp}
-      `.trim()
-    };
+    try {
+      const res = await fetch("/api/booking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          organisation: formData.organization,
+          message: fullMessage,
+          date: formData.preferredSlot,
+        }),
+      });
 
-    const smsNotification = {
-      to: '+31657337256',
-      message: `Nieuwe afspraak: ${formData.organization} op ${formData.preferredSlot}. Email: ${formData.email}`
-    };
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Er ging iets mis bij het versturen.");
+      }
 
-    // TODO: Replace with actual API calls in production
-    console.log('📧 EMAIL NOTIFICATIE:', emailNotification);
-    console.log('📱 SMS NOTIFICATIE:', smsNotification);
-    
-    // In production, you would make API calls like:
-    // await fetch('/api/notifications/email', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify(emailNotification)
-    // });
-    // 
-    // await fetch('/api/notifications/sms', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify(smsNotification)
-    // });
-
-    console.log("Form submitted:", formData);
-    setIsSubmitted(true);
+      setIsSubmitted(true);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Er ging iets mis. Probeer het opnieuw.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const canProceedStep1 = formData.name && formData.organization && formData.email;
@@ -474,21 +453,39 @@ Aangemaakt op: ${bookingDetails.timestamp}
                       </p>
                     </div>
 
+                    {validationErrors.length > 0 && (
+                      <div className="p-6 bg-red-50 border border-red-200 rounded-[var(--radius-md)] max-w-3xl">
+                        <p className="font-semibold text-red-800 mb-2">Controleer de volgende velden:</p>
+                        <ul className="list-disc list-inside text-red-700 space-y-1">
+                          {validationErrors.map((err, i) => (
+                            <li key={i}>{err}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {submitError && (
+                      <div className="p-6 bg-red-50 border border-red-200 rounded-[var(--radius-md)] max-w-3xl">
+                        <p className="text-red-800 font-medium">{submitError}</p>
+                      </div>
+                    )}
+
                     <div className="flex flex-col sm:flex-row gap-4 pt-8">
                       <button
                         type="button"
                         onClick={() => setStep(2)}
-                        className="px-10 py-5 bg-white border border-[var(--border)] text-[var(--foreground)] rounded-[var(--radius-sm)] font-medium hover:bg-[var(--surface)] transition-colors duration-150 flex items-center justify-center gap-3 text-lg"
+                        disabled={isSubmitting}
+                        className="px-10 py-5 bg-white border border-[var(--border)] text-[var(--foreground)] rounded-[var(--radius-sm)] font-medium hover:bg-[var(--surface)] transition-colors duration-150 disabled:opacity-40 flex items-center justify-center gap-3 text-lg"
                       >
                         <ChevronLeft className="w-5 h-5" />
                         Terug
                       </button>
                       <button
                         type="submit"
-                        disabled={!canSubmit}
+                        disabled={!canSubmit || isSubmitting}
                         className="flex-1 px-10 py-5 bg-[var(--foreground)] text-white rounded-[var(--radius-sm)] font-medium hover:opacity-90 transition-opacity duration-150 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-3 text-lg"
                       >
-                        Bevestig gesprek
+                        {isSubmitting ? "Versturen..." : "Bevestig gesprek"}
                       </button>
                     </div>
                   </div>
