@@ -1,21 +1,36 @@
 import { Resend } from "resend";
 
 export default async function handler(req, res) {
+  console.log("[booking] Function invoked, method:", req.method);
+
   if (req.method !== "POST") {
+    console.log("[booking] Rejected: method not allowed");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { name, email, organisation, message, date } = req.body;
+  // Validate API key early
+  if (!process.env.RESEND_API_KEY) {
+    console.error("[booking] RESEND_API_KEY is not set");
+    return res.status(500).json({ error: "Server configuratiefout: e-mail service niet beschikbaar." });
+  }
+
+  const body = req.body;
+  console.log("[booking] Request body:", JSON.stringify(body));
+
+  const { name, email, organisation, message, date } = body || {};
 
   if (!email || !name) {
+    console.log("[booking] Validation failed: name or email missing");
     return res.status(400).json({ error: "Naam en e-mail zijn verplicht." });
   }
 
   const resend = new Resend(process.env.RESEND_API_KEY);
+  const timestamp = new Date().toLocaleString("nl-NL", { timeZone: "Europe/Amsterdam" });
 
   try {
     // A) Notificatie naar Deteqt inbox
-    await resend.emails.send({
+    console.log("[booking] Sending admin notification email...");
+    const adminResult = await resend.emails.send({
       from: "Deteqt <info@deteqt.nl>",
       to: "ingobeute@gmail.com",
       subject: "Nieuwe afspraakaanvraag via deteqt.nl",
@@ -41,16 +56,18 @@ export default async function handler(req, res) {
             </tr>
             <tr>
               <td style="padding: 12px 0; font-weight: 600; vertical-align: top;">Toelichting</td>
-              <td style="padding: 12px 0;">${escapeHtml(message || "Geen toelichting opgegeven")}</td>
+              <td style="padding: 12px 0; white-space: pre-line;">${escapeHtml(message || "Geen toelichting opgegeven")}</td>
             </tr>
           </table>
-          <p style="margin-top: 32px; font-size: 13px; color: #6b7280;">Verzonden via deteqt.nl op ${new Date().toLocaleString("nl-NL", { timeZone: "Europe/Amsterdam" })}</p>
+          <p style="margin-top: 32px; font-size: 13px; color: #6b7280;">Verzonden via deteqt.nl op ${timestamp}</p>
         </div>
       `,
     });
+    console.log("[booking] Admin email result:", JSON.stringify(adminResult));
 
     // B) Bevestiging naar de klant
-    await resend.emails.send({
+    console.log("[booking] Sending confirmation email to:", email);
+    const clientResult = await resend.emails.send({
       from: "Deteqt <info@deteqt.nl>",
       to: email,
       subject: "Bevestiging: aanvraag ontvangen (Deteqt)",
@@ -79,11 +96,18 @@ export default async function handler(req, res) {
         </div>
       `,
     });
+    console.log("[booking] Client email result:", JSON.stringify(clientResult));
 
+    console.log("[booking] Both emails sent successfully");
     return res.status(200).json({ ok: true });
   } catch (error) {
-    console.error("Resend error:", error);
-    return res.status(500).json({ error: "Er ging iets mis bij het versturen." });
+    console.error("[booking] Error sending email:", error);
+    console.error("[booking] Error name:", error?.name);
+    console.error("[booking] Error message:", error?.message);
+    console.error("[booking] Error statusCode:", error?.statusCode);
+    return res.status(500).json({
+      error: "Er ging iets mis bij het versturen van de e-mail.",
+    });
   }
 }
 
