@@ -24,6 +24,7 @@ export default function BookingPage() {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -107,8 +108,13 @@ export default function BookingPage() {
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
+
+      if (data.correlationId) {
+        setCorrelationId(data.correlationId);
+      }
+
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Er ging iets mis bij het versturen.");
       }
 
@@ -171,6 +177,11 @@ export default function BookingPage() {
           >
             Terug naar home
           </button>
+          {correlationId && (
+            <p className="mt-6 text-xs text-[var(--muted-foreground)]">
+              {"Referentie: "}{correlationId}
+            </p>
+          )}
         </div>
       </div>
     );
@@ -467,6 +478,9 @@ export default function BookingPage() {
                     {submitError && (
                       <div className="p-6 bg-red-50 border border-red-200 rounded-[var(--radius-md)] max-w-3xl">
                         <p className="text-red-800 font-medium">{submitError}</p>
+                        {correlationId && (
+                          <p className="text-red-600 text-xs mt-2">{"Referentie: "}{correlationId}</p>
+                        )}
                       </div>
                     )}
 

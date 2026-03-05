@@ -1,37 +1,118 @@
 import { Resend } from "resend";
+import crypto from "crypto";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function correlationId() {
+  return crypto.randomUUID().slice(0, 12);
+}
+
+function redactEmail(email) {
+  if (!email) return "(empty)";
+  const [local, domain] = email.split("@");
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function maskKey(key) {
+  if (!key) return "(missing)";
+  return `${key.slice(0, 4)}...${key.slice(-4)} (${key.length} chars)`;
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function safeHeaders(headers) {
+  const safe = { ...headers };
+  delete safe.authorization;
+  delete safe.cookie;
+  delete safe["x-admin-token"];
+  return safe;
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
 export default async function handler(req, res) {
-  console.log("[booking] Function invoked, method:", req.method);
+  const cid = correlationId();
+  const log = (msg, data) =>
+    console.log(`[booking][${cid}] ${msg}`, data !== undefined ? JSON.stringify(data) : "");
 
+  log("START", {
+    method: req.method,
+    url: req.url,
+    headers: safeHeaders(req.headers),
+  });
+
+  // ── Method guard ─────────────────────────────────────────────────────
   if (req.method !== "POST") {
-    console.log("[booking] Rejected: method not allowed");
-    return res.status(405).json({ error: "Method not allowed" });
+    log("REJECT method_not_allowed");
+    return res.status(405).json({ error: "Method not allowed", correlationId: cid });
   }
 
-  // Validate API key early
-  if (!process.env.RESEND_API_KEY) {
-    console.error("[booking] RESEND_API_KEY is not set");
-    return res.status(500).json({ error: "Server configuratiefout: e-mail service niet beschikbaar." });
+  // ── Env var checks ───────────────────────────────────────────────────
+  const apiKey = process.env.RESEND_API_KEY;
+  const fromAddress = process.env.RESEND_FROM || "Deteqt <onboarding@resend.dev>";
+
+  log("ENV_CHECK", {
+    RESEND_API_KEY_present: !!apiKey,
+    RESEND_API_KEY_masked: maskKey(apiKey),
+    RESEND_FROM: fromAddress,
+    VERCEL_ENV: process.env.VERCEL_ENV || "local",
+  });
+
+  if (!apiKey) {
+    log("ERROR missing RESEND_API_KEY");
+    return res.status(500).json({
+      error: "Server configuratiefout: RESEND_API_KEY ontbreekt.",
+      correlationId: cid,
+    });
   }
 
-  const body = req.body;
-  console.log("[booking] Request body:", JSON.stringify(body));
+  // ── Parse & validate body ────────────────────────────────────────────
+  const body = req.body || {};
+  const { name, email, organisation, message, date } = body;
 
-  const { name, email, organisation, message, date } = body || {};
+  log("BODY_PARSED", {
+    name: name || "(empty)",
+    email: redactEmail(email),
+    organisation: organisation || "(empty)",
+    message: message ? `${message.slice(0, 80)}...` : "(empty)",
+    date: date || "(empty)",
+  });
 
-  if (!email || !name) {
-    console.log("[booking] Validation failed: name or email missing");
-    return res.status(400).json({ error: "Naam en e-mail zijn verplicht." });
+  const missing = [];
+  if (!name || !String(name).trim()) missing.push("name");
+  if (!email || !String(email).trim()) missing.push("email");
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) missing.push("email (invalid format)");
+
+  if (missing.length > 0) {
+    log("VALIDATION_FAILED", { missing });
+    return res.status(400).json({
+      error: `Verplichte velden ontbreken of zijn ongeldig: ${missing.join(", ")}`,
+      correlationId: cid,
+    });
   }
 
-  const resend = new Resend(process.env.RESEND_API_KEY);
+  // ── Send emails ──────────────────────────────────────────────────────
+  const resend = new Resend(apiKey);
   const timestamp = new Date().toLocaleString("nl-NL", { timeZone: "Europe/Amsterdam" });
 
   try {
-    // A) Notificatie naar Deteqt inbox
-    console.log("[booking] Sending admin notification email...");
+    // A) Admin notification
+    log("SEND_ADMIN", { from: fromAddress, to: "info@deteqt.nl", subject: "Nieuwe afspraakaanvraag via deteqt.nl" });
+
     const adminResult = await resend.emails.send({
-      from: "Deteqt <info@deteqt.nl>",
+      from: fromAddress,
       to: "info@deteqt.nl",
       subject: "Nieuwe afspraakaanvraag via deteqt.nl",
       html: `
@@ -59,16 +140,18 @@ export default async function handler(req, res) {
               <td style="padding: 12px 0; white-space: pre-line;">${escapeHtml(message || "Geen toelichting opgegeven")}</td>
             </tr>
           </table>
-          <p style="margin-top: 32px; font-size: 13px; color: #6b7280;">Verzonden via deteqt.nl op ${timestamp}</p>
+          <p style="margin-top: 32px; font-size: 13px; color: #6b7280;">Verzonden via deteqt.nl op ${timestamp} | ref: ${cid}</p>
         </div>
       `,
     });
-    console.log("[booking] Admin email result:", JSON.stringify(adminResult));
 
-    // B) Bevestiging naar de klant
-    console.log("[booking] Sending confirmation email to:", email);
+    log("ADMIN_RESULT", adminResult);
+
+    // B) Customer confirmation
+    log("SEND_CLIENT", { from: fromAddress, to: redactEmail(email), subject: "Bevestiging: aanvraag ontvangen (Deteqt)" });
+
     const clientResult = await resend.emails.send({
-      from: "Deteqt <info@deteqt.nl>",
+      from: fromAddress,
       to: email,
       subject: "Bevestiging: aanvraag ontvangen (Deteqt)",
       html: `
@@ -91,32 +174,35 @@ export default async function handler(req, res) {
           </p>
           <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 32px 0 16px;" />
           <p style="font-size: 12px; color: #9ca3af;">
-            Dit is een automatisch bericht. U ontvangt deze e-mail omdat u een aanvraag heeft ingediend via deteqt.nl.
+            Dit is een automatisch bericht. U ontvangt deze e-mail omdat u een aanvraag heeft ingediend via deteqt.nl. | ref: ${cid}
           </p>
         </div>
       `,
     });
-    console.log("[booking] Client email result:", JSON.stringify(clientResult));
 
-    console.log("[booking] Both emails sent successfully");
-    return res.status(200).json({ ok: true });
+    log("CLIENT_RESULT", clientResult);
+
+    // ── Success ────────────────────────────────────────────────────────
+    log("SUCCESS both emails sent");
+
+    return res.status(200).json({
+      ok: true,
+      correlationId: cid,
+      adminEmailId: adminResult?.data?.id || null,
+      clientEmailId: clientResult?.data?.id || null,
+    });
   } catch (error) {
-    console.error("[booking] Error sending email:", error);
-    console.error("[booking] Error name:", error?.name);
-    console.error("[booking] Error message:", error?.message);
-    console.error("[booking] Error statusCode:", error?.statusCode);
+    log("ERROR", {
+      name: error?.name,
+      message: error?.message,
+      statusCode: error?.statusCode,
+      response: error?.response ? JSON.stringify(error.response) : undefined,
+    });
+
     return res.status(500).json({
       error: "Er ging iets mis bij het versturen van de e-mail.",
+      correlationId: cid,
+      detail: error?.message || null,
     });
   }
-}
-
-function escapeHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
